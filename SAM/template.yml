@@ -1,0 +1,184 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: An Amazon API Gateway REST API that integrates with an Amazon DynamoDB table.
+Parameters:
+  AppName:
+    Type: String
+    Default: api-chinook
+    Description: Name of application.
+  StageName:
+    Type: String
+    Default: v1
+    Description: Name of API stage.
+Resources:
+  DynamoDBTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: Courses
+      # A list of attributes that describe the key schema for the DynamoDB table and indexes.
+      AttributeDefinitions:
+        - AttributeName: course_id
+          AttributeType: S
+        - AttributeName: element_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: course_id
+          KeyType: HASH
+        - AttributeName: element_id
+          KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+  APIGatewayRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+      Policies:
+        - PolicyName: APIGatewayDynamoDBPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:Query'
+                # Including * in the resource Arn allows access to the DynamoDB table and indexes
+                Resource: !Sub
+                  - '${varTableArn}*'
+                  - varTableArn: !GetAtt DynamoDBTable.Arn
+  Api:
+    Type: 'AWS::ApiGateway::RestApi'
+    Properties:
+      Name: !Sub '${AppName}'
+      ApiKeySourceType: HEADER
+  CoursesResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !GetAtt Api.RootResourceId
+      PathPart: 'courses'
+  CoursesMethodPost:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref CoursesResource
+      HttpMethod: POST
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS
+        Credentials: !GetAtt APIGatewayRole.Arn
+        # Should always be POST when integrating with AWS services
+        IntegrationHttpMethod: POST
+        # More info: https://docs.aws.amazon.com/apigateway/api-reference/resource/integration/
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:dynamodb:action/PutItem'
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        RequestTemplates:
+          # Build the structure of the request that is sent when calling DynamoDB PutItem
+          # Using single-line, stringified JSON as the mapping template
+          # Example body when making API request: {"artist": "The Beatles", "album": "Abbey Road"}
+          # Use the unique id of the API context variable (eg: $context.requestId) as the DynamoDB item id
+          application/json: "{\"TableName\":\"Courses\",\"Item\":{\"course_id\":{\"S\":\"$context.requestId\"},\"element_id\":{\"S\":\"course\"},\"title\":{\"S\":\"$input.path('$.title')\"},\"description\":{\"S\":\"$input.path('$.description')\"}}}"
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseTemplates:
+              application/json: "{}"
+      MethodResponses:
+        - StatusCode: '200'
+  CourseResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !Ref CoursesResource
+      PathPart: '{course_id}'
+  CourseMethodGet:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref CourseResource
+      HttpMethod: GET
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      RequestParameters:
+        # Determines whether the path parameter (eg: course_id) is required
+        method.request.path.course_id: true
+      Integration:
+        Type: AWS
+        Credentials: !GetAtt APIGatewayRole.Arn
+        # Should always be POST when integrating with AWS services
+        IntegrationHttpMethod: POST
+        # More info: https://docs.aws.amazon.com/apigateway/api-reference/resource/integration/
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:dynamodb:action/Query'
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        RequestParameters:
+          integration.request.path.course_id: method.request.path.course_id
+        RequestTemplates:
+          # Build the structure of the request that is sent when calling DynamoDB Query
+          # Using single-line, stringified JSON as the mapping template
+          # Use $util.urlDecode($input.params('pathname')) to decode if the url path value contains spaces
+          # A + or %20 may be used as a space in the url
+          application/json: "{\"TableName\":\"Courses\",\"KeyConditionExpression\":\"course_id = :course_id AND element_id = :element_id\",\"ExpressionAttributeValues\":{\":course_id\":{\"S\":\"$util.urlDecode($input.params('course_id'))\"},\":element_id\":{\"S\":\"course\"}}}"
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseTemplates:
+              # Modify the response of the DynamoDB Query before sending back to the caller
+              # Using single-line Velocity Template Language (VTL) code as the mapping template
+              # \n represents a new line, \t represents a tab character, \" represents a single quote character
+              # Example response: {"music":[{"id":"38bfb57e-a5a8-4fed-9a4f-391d66d5e987","artist":"The Beatles","album":"Abbey Road"}]}
+              application/json: "#set($inputRoot = $input.path('$'))\n{\n\t\"course\": [\n\t\t#foreach($field in $inputRoot.Items) {\n\t\t\t\"course_id\": \"$field.course_id.S\",\n\t\t\t\"element_id\": \"$field.element_id.S\",\n\t\t\t\"title\": \"$field.title.S\",\n\t\t\t\"description\": \"$field.description.S\"\n\t\t}#if($foreach.hasNext),#end\n\t\t#end\n\t]\n}"
+      MethodResponses:
+        - StatusCode: '200'
+  ApiDeployment:
+    Type: 'AWS::ApiGateway::Deployment'
+    DependsOn:
+      - CourseMethodGet
+    Properties:
+      RestApiId: !Ref Api
+      StageName: !Sub '${StageName}'
+  ApiKey:
+    Type: 'AWS::ApiGateway::ApiKey'
+    DependsOn:
+      - ApiDeployment
+    Properties:
+      Enabled: true
+      Name: !Sub '${AppName}-apikey'
+      StageKeys:
+        - RestApiId: !Ref Api
+          StageName: !Sub '${StageName}'
+  ApiUsagePlan:
+    Type: 'AWS::ApiGateway::UsagePlan'
+    DependsOn:
+      - ApiDeployment
+    Properties:
+      ApiStages:
+        - ApiId: !Ref Api
+          Stage: !Sub '${StageName}'
+      Throttle:
+        RateLimit: 500
+        BurstLimit: 1000
+      UsagePlanName: !Sub '${AppName}-usage-plan'
+      Quota:
+        Limit: 10000
+        Period: MONTH
+  ApiUsagePlanKey:
+    Type: 'AWS::ApiGateway::UsagePlanKey'
+    Properties:
+      KeyType: API_KEY
+      KeyId: !Ref ApiKey
+      UsagePlanId: !Ref ApiUsagePlan
+Outputs:
+  ApiRootUrl:
+    Description: Root Url of the API
+    Value: !Sub 
+      - 'https://${ApiId}.execute-api.${AWS::Region}.amazonaws.com/${StageName}'
+      - ApiId: !Ref Api
+  ApiKeyId:
+    Description: API Key Id
+    Value: !Ref ApiKey
