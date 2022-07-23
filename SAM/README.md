@@ -1,4 +1,4 @@
-test # Amazon API Gateway REST API to Amazon DynamoDB
+# Amazon API Gateway REST API to Amazon DynamoDB
 
 This pattern creates an Amazon API Gateway REST API that integrates with an Amazon DynamoDB table.
 
