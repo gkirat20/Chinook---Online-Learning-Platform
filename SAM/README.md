@@ -1,6 +1,6 @@
 # Amazon API Gateway REST API to Amazon DynamoDB
 
-This pattern creates an Amazon API Gateway REST API that integrates with an Amazon DynamoDB table.
+This pattern creates an Amazon API Gateway REST API that integrates with an Amazon DynamoDB table
 
 Learn more about this pattern at Serverless Land Patterns: http://serverlessland.com/patterns/apigw-dynamodb.
 
