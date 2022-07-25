@@ -1,3 +1,4 @@
+#
 AWSTemplateFormatVersion: 2010-09-09
 Description: An Amazon API Gateway REST API that integrates with an Amazon DynamoDB table.
 Parameters:
