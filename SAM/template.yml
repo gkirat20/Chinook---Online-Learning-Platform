@@ -223,6 +223,89 @@ Resources:
               application/json: "#set($inputRoot = $input.path('$'))\n{\n\t\"course\": [\n\t\t#foreach($field in $inputRoot.Items) {\n\t\t\t\"course_id\": \"$field.course_id.S\",\n\t\t\t\"element_id\": \"$field.element_id.S\",\n\t\t\t\"title\": \"$field.title.S\",\n\t\t\t\"content\": \"$field.content.S\"\n\t\t}#if($foreach.hasNext),#end\n\t\t#end\n\t]\n}"
       MethodResponses:
         - StatusCode: '200'
+
+  QuizResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !Ref CourseResource
+      PathPart: 'quizzes'
+
+  QuizMethodPost:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref QuizResource
+      HttpMethod: POST
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS
+        Credentials: !GetAtt APIGatewayRole.Arn
+        # Should always be POST when integrating with AWS services
+        IntegrationHttpMethod: POST
+        # More info: https://docs.aws.amazon.com/apigateway/api-reference/resource/integration/
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:dynamodb:action/PutItem'
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        RequestTemplates:
+          # Build the structure of the request that is sent when calling DynamoDB PutItem
+          # Using single-line, stringified JSON as the mapping template
+          # Example body when making API request: {"artist": "The Beatles", "album": "Abbey Road"}
+          # Use the unique id of the API context variable (eg: $context.requestId) as the DynamoDB item id
+          application/json: "{\"TableName\":\"Courses\",\"Item\":{\"course_id\":{\"S\":\"$util.urlDecode($input.params('course_id'))\"},\"element_id\":{\"S\":\"article:$context.requestId\"},\"title\":{\"S\":\"$input.path('$.title')\"},\"url\":{\"S\":\"$input.path('$.url')\"}}}"
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseTemplates:
+              application/json: "{}"
+      MethodResponses:
+        - StatusCode: '200'
+
+  QuizResourceGet:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !Ref QuizResource
+      PathPart: '{quiz_id}'
+
+  QuizMethodGet:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref QuizResourceGet
+      HttpMethod: GET
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      RequestParameters:
+        # Determines whether the path parameter (eg: course_id) is required
+        method.request.path.course_id: true
+        method.request.path.quiz_id: true
+      Integration:
+        Type: AWS
+        Credentials: !GetAtt APIGatewayRole.Arn
+        # Should always be POST when integrating with AWS services
+        IntegrationHttpMethod: POST
+        # More info: https://docs.aws.amazon.com/apigateway/api-reference/resource/integration/
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:dynamodb:action/Query'
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        RequestParameters:
+          integration.request.path.course_id: method.request.path.course_id
+          integration.request.path.quiz_id: method.request.path.quiz_id
+        RequestTemplates:
+          # Build the structure of the request that is sent when calling DynamoDB Query
+          # Using single-line, stringified JSON as the mapping template
+          # Use $util.urlDecode($input.params('pathname')) to decode if the url path value contains spaces
+          # A + or %20 may be used as a space in the url
+          application/json: "{\"TableName\":\"Courses\",\"KeyConditionExpression\":\"course_id = :course_id AND element_id = :element_id\",\"ExpressionAttributeValues\":{\":course_id\":{\"S\":\"$util.urlDecode($input.params('course_id'))\"},\":element_id\":{\"S\":\"quiz:$util.urlDecode($input.params('quiz_id'))\"}}}"
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseTemplates:
+              # Modify the response of the DynamoDB Query before sending back to the caller
+              # Using single-line Velocity Template Language (VTL) code as the mapping template
+              # \n represents a new line, \t represents a tab character, \" represents a single quote character
+              # Example response: {"music":[{"id":"38bfb57e-a5a8-4fed-9a4f-391d66d5e987","artist":"The Beatles","album":"Abbey Road"}]}
+              application/json: "#set($inputRoot = $input.path('$'))\n{\n\t\"course\": [\n\t\t#foreach($field in $inputRoot.Items) {\n\t\t\t\"course_id\": \"$field.course_id.S\",\n\t\t\t\"element_id\": \"$field.element_id.S\",\n\t\t\t\"title\": \"$field.title.S\",\n\t\t\t\"url\": \"$field.url.S\"\n\t\t}#if($foreach.hasNext),#end\n\t\t#end\n\t]\n}"
+      MethodResponses:
+        - StatusCode: '200'
         
 
   ApiDeployment:
