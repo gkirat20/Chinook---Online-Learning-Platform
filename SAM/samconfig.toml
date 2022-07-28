@@ -3,9 +3,9 @@ version = 0.1
 [default.deploy]
 [default.deploy.parameters]
 stack_name = "sam-app"
-s3_bucket = "aws-sam-cli-managed-default-samclisourcebucket-13hq1ykk0p09o"
+s3_bucket = "aws-sam-cli-managed-default-samclisourcebucket-xqah88rmmj1l"
 s3_prefix = "sam-app"
 region = "us-east-1"
 capabilities = "CAPABILITY_IAM"
-parameter_overrides = "AppName=\"api-music\" StageName=\"v1\""
+parameter_overrides = "AppName=\"api-chinook\" StageName=\"v1\""
 image_repositories = []
