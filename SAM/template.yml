@@ -11,10 +11,10 @@ Parameters:
     Default: v1
     Description: Name of API stage.
 Resources:
-  DynamoDBTable:
+  CourseElementsDynamoTable:
     Type: 'AWS::DynamoDB::Table'
     Properties:
-      TableName: Courses
+      TableName: CourseElements
       # A list of attributes that describe the key schema for the DynamoDB table and indexes.
       AttributeDefinitions:
         - AttributeName: course_id
@@ -26,6 +26,34 @@ Resources:
           KeyType: HASH
         - AttributeName: element_id
           KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+  CoursesMetadataDynamoTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: CoursesMetadata
+      # A list of attributes that describe the key schema for the DynamoDB table and indexes.
+      AttributeDefinitions:
+        - AttributeName: course_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: course_id
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+  QuizQuestionsDynamoTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: QuizQuestions
+      # A list of attributes that describe the key schema for the DynamoDB table and indexes.
+      AttributeDefinitions:
+        - AttributeName: quiz_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: quiz_id
+          KeyType: HASH
       ProvisionedThroughput:
         ReadCapacityUnits: 5
         WriteCapacityUnits: 5
@@ -51,9 +79,10 @@ Resources:
                   - 'dynamodb:PutItem'
                   - 'dynamodb:Query'
                 # Including * in the resource Arn allows access to the DynamoDB table and indexes
-                Resource: !Sub
-                  - '${varTableArn}*'
-                  - varTableArn: !GetAtt DynamoDBTable.Arn
+                Resource:
+                  - !Sub  '${CourseElementsDynamoTable.Arn}*'
+                  - !Sub  '${CoursesMetadataDynamoTable.Arn}*'
+                  - !Sub  '${QuizQuestionsDynamoTable.Arn}*'
   Api:
     Type: 'AWS::ApiGateway::RestApi'
     Properties:
@@ -88,7 +117,7 @@ Resources:
           # Using single-line, stringified JSON as the mapping template
           # Example body when making API request: {"artist": "The Beatles", "album": "Abbey Road"}
           # Use the unique id of the API context variable (eg: $context.requestId) as the DynamoDB item id
-          application/json: "{\"TableName\":\"Courses\",\"Item\":{\"course_id\":{\"S\":\"$context.requestId\"},\"element_id\":{\"S\":\"course\"},\"title\":{\"S\":\"$input.path('$.title')\"},\"description\":{\"S\":\"$input.path('$.description')\"}}}"
+          application/json: "{\"TableName\":\"CoursesMetadata\",\"Item\":{\"course_id\":{\"S\":\"$context.requestId\"},\"element_id\":{\"S\":\"course\"},\"title\":{\"S\":\"$input.path('$.title')\"},\"description\":{\"S\":\"$input.path('$.description')\"}}}"
         IntegrationResponses:
           - StatusCode: '200'
             ResponseTemplates:
