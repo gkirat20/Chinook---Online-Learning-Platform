@@ -11,10 +11,10 @@ Parameters:
     Default: v1
     Description: Name of API stage.
 Resources:
-  DynamoDBTable:
+  CourseElementsDynamoTable:
     Type: 'AWS::DynamoDB::Table'
     Properties:
-      TableName: Courses
+      TableName: CourseElements
       # A list of attributes that describe the key schema for the DynamoDB table and indexes.
       AttributeDefinitions:
         - AttributeName: course_id
@@ -25,6 +25,38 @@ Resources:
         - AttributeName: course_id
           KeyType: HASH
         - AttributeName: element_id
+          KeyType: RANGE
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+  CoursesMetadataDynamoTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: CoursesMetadata
+      # A list of attributes that describe the key schema for the DynamoDB table and indexes.
+      AttributeDefinitions:
+        - AttributeName: course_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: course_id
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+  QuizQuestionsDynamoTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: QuizQuestions
+      # A list of attributes that describe the key schema for the DynamoDB table and indexes.
+      AttributeDefinitions:
+        - AttributeName: quiz_id
+          AttributeType: S
+        - AttributeName: question_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: quiz_id
+          KeyType: HASH
+        - AttributeName: question_id
           KeyType: RANGE
       ProvisionedThroughput:
         ReadCapacityUnits: 5
@@ -51,9 +83,33 @@ Resources:
                   - 'dynamodb:PutItem'
                   - 'dynamodb:Query'
                 # Including * in the resource Arn allows access to the DynamoDB table and indexes
-                Resource: !Sub
-                  - '${varTableArn}*'
-                  - varTableArn: !GetAtt DynamoDBTable.Arn
+                Resource:
+                  - !Sub  '${CourseElementsDynamoTable.Arn}*'
+                  - !Sub  '${CoursesMetadataDynamoTable.Arn}*'
+                  - !Sub  '${QuizQuestionsDynamoTable.Arn}*'
+  APIGatewayScanRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+      Policies:
+        - PolicyName: APIGatewayDynamoDBScanPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:Scan'
+                # Including * in the resource Arn allows access to the DynamoDB table and indexes
+                Resource:
+                  - !Sub  '${CoursesMetadataDynamoTable.Arn}*'  
   Api:
     Type: 'AWS::ApiGateway::RestApi'
     Properties:
@@ -88,7 +144,7 @@ Resources:
           # Using single-line, stringified JSON as the mapping template
           # Example body when making API request: {"artist": "The Beatles", "album": "Abbey Road"}
           # Use the unique id of the API context variable (eg: $context.requestId) as the DynamoDB item id
-          application/json: "{\"TableName\":\"Courses\",\"Item\":{\"course_id\":{\"S\":\"$context.requestId\"},\"element_id\":{\"S\":\"course\"},\"title\":{\"S\":\"$input.path('$.title')\"},\"description\":{\"S\":\"$input.path('$.description')\"}}}"
+          application/json: "{\"TableName\":\"CoursesMetadata\",\"Item\":{\"course_id\":{\"S\":\"$context.requestId\"},\"title\":{\"S\":\"$input.path('$.title')\"},\"description\":{\"S\":\"$input.path('$.description')\"}}}"
         IntegrationResponses:
           - StatusCode: '200'
             ResponseTemplates:
@@ -96,6 +152,39 @@ Resources:
       MethodResponses:
         - StatusCode: '200'
   
+  GetAllCoursesMethodGet:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref CoursesResource
+      HttpMethod: GET
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS
+        Credentials: !GetAtt APIGatewayScanRole.Arn
+        # Should always be POST when integrating with AWS services
+        IntegrationHttpMethod: POST
+        # More info: https://docs.aws.amazon.com/apigateway/api-reference/resource/integration/
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:dynamodb:action/Scan'
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        RequestTemplates:
+          # Build the structure of the request that is sent when calling DynamoDB Query
+          # Using single-line, stringified JSON as the mapping template
+          # Use $util.urlDecode($input.params('pathname')) to decode if the url path value contains spaces
+          # A + or %20 may be used as a space in the url
+          application/json: "{\"TableName\":\"CoursesMetadata\"}"
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseTemplates:
+              # Modify the response of the DynamoDB Query before sending back to the caller
+              # Using single-line Velocity Template Language (VTL) code as the mapping template
+              # \n represents a new line, \t represents a tab character, \" represents a single quote character
+              # Example response: {"music":[{"id":"38bfb57e-a5a8-4fed-9a4f-391d66d5e987","artist":"The Beatles","album":"Abbey Road"}]}
+              application/json: "#set($inputRoot = $input.path('$'))\n{\n\t\"course\": [\n\t\t#foreach($field in $inputRoot.Items) {\n\t\t\t\"course_id\": \"$field.course_id.S\",\n\t\t\t\"title\": \"$field.title.S\",\n\t\t\t\"description\": \"$field.description.S\"\n\t\t}#if($foreach.hasNext),#end\n\t\t#end\n\t]\n}"
+      MethodResponses:
+        - StatusCode: '200'
+
   CourseResource:
     Type: 'AWS::ApiGateway::Resource'
     Properties:
@@ -129,7 +218,7 @@ Resources:
           # Using single-line, stringified JSON as the mapping template
           # Use $util.urlDecode($input.params('pathname')) to decode if the url path value contains spaces
           # A + or %20 may be used as a space in the url
-          application/json: "{\"TableName\":\"Courses\",\"KeyConditionExpression\":\"course_id = :course_id AND element_id = :element_id\",\"ExpressionAttributeValues\":{\":course_id\":{\"S\":\"$util.urlDecode($input.params('course_id'))\"},\":element_id\":{\"S\":\"course\"}}}"
+          application/json: "{\"TableName\":\"CoursesMetadata\",\"KeyConditionExpression\":\"course_id=:course_id\",\"ExpressionAttributeValues\":{\":course_id\":{\"S\":\"$util.urlDecode($input.params('course_id'))\"}}}"
         IntegrationResponses:
           - StatusCode: '200'
             ResponseTemplates:
@@ -137,7 +226,53 @@ Resources:
               # Using single-line Velocity Template Language (VTL) code as the mapping template
               # \n represents a new line, \t represents a tab character, \" represents a single quote character
               # Example response: {"music":[{"id":"38bfb57e-a5a8-4fed-9a4f-391d66d5e987","artist":"The Beatles","album":"Abbey Road"}]}
-              application/json: "#set($inputRoot = $input.path('$'))\n{\n\t\"course\": [\n\t\t#foreach($field in $inputRoot.Items) {\n\t\t\t\"course_id\": \"$field.course_id.S\",\n\t\t\t\"element_id\": \"$field.element_id.S\",\n\t\t\t\"title\": \"$field.title.S\",\n\t\t\t\"description\": \"$field.description.S\"\n\t\t}#if($foreach.hasNext),#end\n\t\t#end\n\t]\n}"
+              application/json: "#set($inputRoot = $input.path('$'))\n{\n\t\"course\": [\n\t\t#foreach($field in $inputRoot.Items) {\n\t\t\t\"course_id\": \"$field.course_id.S\",\n\t\t\t\"title\": \"$field.title.S\",\n\t\t\t\"description\": \"$field.description.S\"\n\t\t}#if($foreach.hasNext),#end\n\t\t#end\n\t]\n}"
+      MethodResponses:
+        - StatusCode: '200'
+
+
+  ElementsResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !Ref CourseResource
+      PathPart: 'elements'
+
+  ElementsMethodGet:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref ElementsResource
+      HttpMethod: GET
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      RequestParameters:
+        # Determines whether the path parameter (eg: course_id) is required
+        method.request.path.course_id: true
+      Integration:
+        Type: AWS
+        Credentials: !GetAtt APIGatewayRole.Arn
+        # Should always be POST when integrating with AWS services
+        IntegrationHttpMethod: POST
+        # More info: https://docs.aws.amazon.com/apigateway/api-reference/resource/integration/
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:dynamodb:action/Query'
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        RequestParameters:
+          integration.request.path.course_id: method.request.path.course_id
+        RequestTemplates:
+          # Build the structure of the request that is sent when calling DynamoDB Query
+          # Using single-line, stringified JSON as the mapping template
+          # Use $util.urlDecode($input.params('pathname')) to decode if the url path value contains spaces
+          # A + or %20 may be used as a space in the url
+          application/json: "{\"TableName\":\"CourseElements\",\"KeyConditionExpression\":\"course_id = :course_id\",\"ExpressionAttributeValues\":{\":course_id\":{\"S\":\"$util.urlDecode($input.params('course_id'))\"}}}"
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseTemplates:
+              # Modify the response of the DynamoDB Query before sending back to the caller
+              # Using single-line Velocity Template Language (VTL) code as the mapping template
+              # \n represents a new line, \t represents a tab character, \" represents a single quote character
+              # Example response: {"music":[{"id":"38bfb57e-a5a8-4fed-9a4f-391d66d5e987","artist":"The Beatles","album":"Abbey Road"}]}
+              application/json: "#set($inputRoot = $input.path('$'))\n{\n\t\"course\": [\n\t\t#foreach($field in $inputRoot.Items) {\n\t\t\t\"course_id\": \"$field.course_id.S\",\n\t\t\t\"element_id\": \"$field.element_id.S\",\n\t\t\t\"title\": \"$field.title.S\",\n\t\t\t\"content\": \"$field.content.S\",\n\t\t\t\"url\": \"$field.url.S\"\n\t\t}#if($foreach.hasNext),#end\n\t\t#end\n\t]\n}"
       MethodResponses:
         - StatusCode: '200'
 
@@ -169,7 +304,7 @@ Resources:
           # Using single-line, stringified JSON as the mapping template
           # Example body when making API request: {"artist": "The Beatles", "album": "Abbey Road"}
           # Use the unique id of the API context variable (eg: $context.requestId) as the DynamoDB item id
-          application/json: "{\"TableName\":\"Courses\",\"Item\":{\"course_id\":{\"S\":\"$util.urlDecode($input.params('course_id'))\"},\"element_id\":{\"S\":\"article:$context.requestId\"},\"title\":{\"S\":\"$input.path('$.title')\"},\"content\":{\"S\":\"$input.path('$.content')\"}}}"
+          application/json: "{\"TableName\":\"CourseElements\",\"Item\":{\"course_id\":{\"S\":\"$util.urlDecode($input.params('course_id'))\"},\"element_id\":{\"S\":\"article:$context.requestId\"},\"title\":{\"S\":\"$input.path('$.title')\"},\"content\":{\"S\":\"$input.path('$.content')\"}}}"
         IntegrationResponses:
           - StatusCode: '200'
             ResponseTemplates:
@@ -212,7 +347,7 @@ Resources:
           # Using single-line, stringified JSON as the mapping template
           # Use $util.urlDecode($input.params('pathname')) to decode if the url path value contains spaces
           # A + or %20 may be used as a space in the url
-          application/json: "{\"TableName\":\"Courses\",\"KeyConditionExpression\":\"course_id = :course_id AND element_id = :element_id\",\"ExpressionAttributeValues\":{\":course_id\":{\"S\":\"$util.urlDecode($input.params('course_id'))\"},\":element_id\":{\"S\":\"article:$util.urlDecode($input.params('article_id'))\"}}}"
+          application/json: "{\"TableName\":\"CourseElements\",\"KeyConditionExpression\":\"course_id = :course_id AND element_id = :element_id\",\"ExpressionAttributeValues\":{\":course_id\":{\"S\":\"$util.urlDecode($input.params('course_id'))\"},\":element_id\":{\"S\":\"$util.urlDecode($input.params('article_id'))\"}}}"
         IntegrationResponses:
           - StatusCode: '200'
             ResponseTemplates:
@@ -221,6 +356,89 @@ Resources:
               # \n represents a new line, \t represents a tab character, \" represents a single quote character
               # Example response: {"music":[{"id":"38bfb57e-a5a8-4fed-9a4f-391d66d5e987","artist":"The Beatles","album":"Abbey Road"}]}
               application/json: "#set($inputRoot = $input.path('$'))\n{\n\t\"course\": [\n\t\t#foreach($field in $inputRoot.Items) {\n\t\t\t\"course_id\": \"$field.course_id.S\",\n\t\t\t\"element_id\": \"$field.element_id.S\",\n\t\t\t\"title\": \"$field.title.S\",\n\t\t\t\"content\": \"$field.content.S\"\n\t\t}#if($foreach.hasNext),#end\n\t\t#end\n\t]\n}"
+      MethodResponses:
+        - StatusCode: '200'
+
+  VideosResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !Ref CourseResource
+      PathPart: 'videos'
+
+  VideosMethodPost:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref VideosResource
+      HttpMethod: POST
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS
+        Credentials: !GetAtt APIGatewayRole.Arn
+        # Should always be POST when integrating with AWS services
+        IntegrationHttpMethod: POST
+        # More info: https://docs.aws.amazon.com/apigateway/api-reference/resource/integration/
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:dynamodb:action/PutItem'
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        RequestTemplates:
+          # Build the structure of the request that is sent when calling DynamoDB PutItem
+          # Using single-line, stringified JSON as the mapping template
+          # Example body when making API request: {"artist": "The Beatles", "album": "Abbey Road"}
+          # Use the unique id of the API context variable (eg: $context.requestId) as the DynamoDB item id
+          application/json: "{\"TableName\":\"CourseElements\",\"Item\":{\"course_id\":{\"S\":\"$util.urlDecode($input.params('course_id'))\"},\"element_id\":{\"S\":\"video:$context.requestId\"},\"title\":{\"S\":\"$input.path('$.title')\"},\"url\":{\"S\":\"$input.path('$.url')\"}}}"
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseTemplates:
+              application/json: "{}"
+      MethodResponses:
+        - StatusCode: '200'
+    
+  VideoResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref Api
+      ParentId: !Ref VideosResource
+      PathPart: '{video_id}'
+
+  VideoMethodGet:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref VideoResource
+      HttpMethod: GET
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      RequestParameters:
+        # Determines whether the path parameter (eg: course_id) is required
+        method.request.path.course_id: true
+        method.request.path.video_id: true
+      Integration:
+        Type: AWS
+        Credentials: !GetAtt APIGatewayRole.Arn
+        # Should always be POST when integrating with AWS services
+        IntegrationHttpMethod: POST
+        # More info: https://docs.aws.amazon.com/apigateway/api-reference/resource/integration/
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:dynamodb:action/Query'
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        RequestParameters:
+          integration.request.path.course_id: method.request.path.course_id
+          integration.request.path.video_id: method.request.path.video_id
+        RequestTemplates:
+          # Build the structure of the request that is sent when calling DynamoDB Query
+          # Using single-line, stringified JSON as the mapping template
+          # Use $util.urlDecode($input.params('pathname')) to decode if the url path value contains spaces
+          # A + or %20 may be used as a space in the url
+          application/json: "{\"TableName\":\"CourseElements\",\"KeyConditionExpression\":\"course_id = :course_id AND element_id = :element_id\",\"ExpressionAttributeValues\":{\":course_id\":{\"S\":\"$util.urlDecode($input.params('course_id'))\"},\":element_id\":{\"S\":\"$util.urlDecode($input.params('video_id'))\"}}}"
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseTemplates:
+              # Modify the response of the DynamoDB Query before sending back to the caller
+              # Using single-line Velocity Template Language (VTL) code as the mapping template
+              # \n represents a new line, \t represents a tab character, \" represents a single quote character
+              # Example response: {"music":[{"id":"38bfb57e-a5a8-4fed-9a4f-391d66d5e987","artist":"The Beatles","album":"Abbey Road"}]}
+              application/json: "#set($inputRoot = $input.path('$'))\n{\n\t\"course\": [\n\t\t#foreach($field in $inputRoot.Items) {\n\t\t\t\"course_id\": \"$field.course_id.S\",\n\t\t\t\"element_id\": \"$field.element_id.S\",\n\t\t\t\"title\": \"$field.title.S\",\n\t\t\t\"url\": \"$field.url.S\"\n\t\t}#if($foreach.hasNext),#end\n\t\t#end\n\t]\n}"
       MethodResponses:
         - StatusCode: '200'
 
@@ -252,11 +470,49 @@ Resources:
           # Using single-line, stringified JSON as the mapping template
           # Example body when making API request: {"artist": "The Beatles", "album": "Abbey Road"}
           # Use the unique id of the API context variable (eg: $context.requestId) as the DynamoDB item id
-          application/json: "{\"TableName\":\"Courses\",\"Item\":{\"course_id\":{\"S\":\"$util.urlDecode($input.params('course_id'))\"},\"element_id\":{\"S\":\"quiz:$context.requestId\"},\"title\":{\"S\":\"$input.path('$.title')\"}}}"
+          application/json: "{\"TableName\":\"CourseElements\",\"Item\":{\"course_id\":{\"S\":\"$util.urlDecode($input.params('course_id'))\"},\"element_id\":{\"S\":\"quiz:$context.requestId\"},\"title\":{\"S\":\"$input.path('$.title')\"}}}"
         IntegrationResponses:
           - StatusCode: '200'
             ResponseTemplates:
               application/json: "{}"
+      MethodResponses:
+        - StatusCode: '200'
+
+  GetAllQuizzesMethodGet:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref QuizzesResource
+      HttpMethod: GET
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      RequestParameters:
+        # Determines whether the path parameter (eg: course_id) is required
+        method.request.path.course_id: true
+      Integration:
+        Type: AWS
+        Credentials: !GetAtt APIGatewayRole.Arn
+        # Should always be POST when integrating with AWS services
+        IntegrationHttpMethod: POST
+        # More info: https://docs.aws.amazon.com/apigateway/api-reference/resource/integration/
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:dynamodb:action/Query'
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        RequestParameters:
+          integration.request.path.course_id: method.request.path.course_id
+        RequestTemplates:
+          # Build the structure of the request that is sent when calling DynamoDB Query
+          # Using single-line, stringified JSON as the mapping template
+          # Use $util.urlDecode($input.params('pathname')) to decode if the url path value contains spaces
+          # A + or %20 may be used as a space in the url
+          application/json: "{\"TableName\":\"CourseElements\",\"KeyConditionExpression\":\"course_id = :course_id\",\"ExpressionAttributeValues\":{\":course_id\":{\"S\":\"$util.urlDecode($input.params('course_id'))\"}}}}"
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseTemplates:
+              # Modify the response of the DynamoDB Query before sending back to the caller
+              # Using single-line Velocity Template Language (VTL) code as the mapping template
+              # \n represents a new line, \t represents a tab character, \" represents a single quote character
+              # Example response: {"music":[{"id":"38bfb57e-a5a8-4fed-9a4f-391d66d5e987","artist":"The Beatles","album":"Abbey Road"}]}
+              application/json: "#set($inputRoot = $input.path('$'))\n{\n\t\"course\": [\n\t\t#foreach($field in $inputRoot.Items) {\n\t\t\t\"course_id\": \"$field.course_id.S\",\n\t\t\t\"element_id\": \"$field.element_id.S\",\n\t\t\t\"title\": \"$field.title.S\"\n\t\t}#if($foreach.hasNext),#end\n\t\t#end\n\t]\n}"
       MethodResponses:
         - StatusCode: '200'
 
@@ -295,7 +551,7 @@ Resources:
           # Using single-line, stringified JSON as the mapping template
           # Use $util.urlDecode($input.params('pathname')) to decode if the url path value contains spaces
           # A + or %20 may be used as a space in the url
-          application/json: "{\"TableName\":\"Courses\",\"KeyConditionExpression\":\"course_id = :course_id AND element_id = :element_id\",\"ExpressionAttributeValues\":{\":course_id\":{\"S\":\"$util.urlDecode($input.params('course_id'))\"},\":element_id\":{\"S\":\"quiz:$util.urlDecode($input.params('quiz_id'))\"}}}"
+          application/json: "{\"TableName\":\"CourseElements\",\"KeyConditionExpression\":\"course_id = :course_id AND element_id = :element_id\",\"ExpressionAttributeValues\":{\":course_id\":{\"S\":\"$util.urlDecode($input.params('course_id'))\"},\":element_id\":{\"S\":\"$util.urlDecode($input.params('quiz_id'))\"}}}"
         IntegrationResponses:
           - StatusCode: '200'
             ResponseTemplates:
@@ -324,7 +580,7 @@ Resources:
       AuthorizationType: NONE
       RequestParameters:
         # Determines whether the path parameter (eg: course_id) is required
-        method.request.path.course_id: true
+        method.request.path.course_id: false
         method.request.path.quiz_id: true
       Integration:
         Type: AWS
@@ -335,20 +591,58 @@ Resources:
         Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:dynamodb:action/PutItem'
         PassthroughBehavior: WHEN_NO_TEMPLATES
         RequestParameters:
-          integration.request.path.course_id: method.request.path.course_id
           integration.request.path.quiz_id: method.request.path.quiz_id
         RequestTemplates:
           # Build the structure of the request that is sent when calling DynamoDB PutItem
           # Using single-line, stringified JSON as the mapping template
           # Example body when making API request: {"artist": "The Beatles", "album": "Abbey Road"}
           # Use the unique id of the API context variable (eg: $context.requestId) as the DynamoDB item id
-          application/json: "{\"TableName\":\"Courses\",\"Item\":{\"course_id\":{\"S\":\"$util.urlDecode($input.params('course_id'))\"},\"element_id\":{\"S\":\"quiz:$util.urlDecode($input.params('quiz_id')):question:$context.requestId\"},\"question\":{\"S\":\"$input.path('$.question')\"},\"answer\":{\"S\":\"$input.path('$.answer')\"}}}"
+          application/json: "{\"TableName\":\"QuizQuestions\",\"Item\":{\"quiz_id\":{\"S\":\"$util.urlDecode($input.params('quiz_id'))\"},\"question_id\":{\"S\":\"$context.requestId\"},\"question\":{\"S\":\"$input.path('$.question')\"},\"answer\":{\"S\":\"$input.path('$.answer')\"}}}"
         IntegrationResponses:
           - StatusCode: '200'
             ResponseTemplates:
               application/json: "{}"
       MethodResponses:
         - StatusCode: '200'      
+  
+  QuizGetAllQuestionsMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref Api
+      ResourceId: !Ref QuizQuestionsResource
+      HttpMethod: GET
+      ApiKeyRequired: true
+      AuthorizationType: NONE
+      RequestParameters:
+        # Determines whether the path parameter (eg: course_id) is required
+        method.request.path.course_id: false
+        method.request.path.quiz_id: true
+      Integration:
+        Type: AWS
+        Credentials: !GetAtt APIGatewayRole.Arn
+        # Should always be POST when integrating with AWS services
+        IntegrationHttpMethod: POST
+        # More info: https://docs.aws.amazon.com/apigateway/api-reference/resource/integration/
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:dynamodb:action/Query'
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        RequestParameters:
+          integration.request.path.quiz_id: method.request.path.quiz_id
+        RequestTemplates:
+          # Build the structure of the request that is sent when calling DynamoDB Query
+          # Using single-line, stringified JSON as the mapping template
+          # Use $util.urlDecode($input.params('pathname')) to decode if the url path value contains spaces
+          # A + or %20 may be used as a space in the url
+          application/json: "{\"TableName\":\"QuizQuestions\",\"KeyConditionExpression\":\"quiz_id = :quiz_id\",\"ExpressionAttributeValues\":{\":quiz_id\":{\"S\":\"$util.urlDecode($input.params('quiz_id'))\"}}}"
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseTemplates:
+              # Modify the response of the DynamoDB Query before sending back to the caller
+              # Using single-line Velocity Template Language (VTL) code as the mapping template
+              # \n represents a new line, \t represents a tab character, \" represents a single quote character
+              # Example response: {"music":[{"id":"38bfb57e-a5a8-4fed-9a4f-391d66d5e987","artist":"The Beatles","album":"Abbey Road"}]}
+              application/json: "#set($inputRoot = $input.path('$'))\n{\n\t\"course\": [\n\t\t#foreach($field in $inputRoot.Items) {\n\t\t\t\"quiz_id\": \"$field.quiz_id.S\",\n\t\t\t\"question_id\": \"$field.question_id.S\",\n\t\t\t\"question\": \"$field.question.S\",\n\t\t\t\"answer\": \"$field.answer.S\"\n\t\t}#if($foreach.hasNext),#end\n\t\t#end\n\t]\n}"
+      MethodResponses:
+        - StatusCode: '200'
 
   QuizQuestionResource:
     Type: 'AWS::ApiGateway::Resource'
@@ -367,7 +661,7 @@ Resources:
       AuthorizationType: NONE
       RequestParameters:
         # Determines whether the path parameter (eg: course_id) is required
-        method.request.path.course_id: true
+        method.request.path.course_id: false
         method.request.path.quiz_id: true
         method.request.path.question_id: true
       Integration:
@@ -379,7 +673,6 @@ Resources:
         Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:dynamodb:action/Query'
         PassthroughBehavior: WHEN_NO_TEMPLATES
         RequestParameters:
-          integration.request.path.course_id: method.request.path.course_id
           integration.request.path.quiz_id: method.request.path.quiz_id
           integration.request.path.question_id: method.request.path.question_id
         RequestTemplates:
@@ -387,7 +680,7 @@ Resources:
           # Using single-line, stringified JSON as the mapping template
           # Use $util.urlDecode($input.params('pathname')) to decode if the url path value contains spaces
           # A + or %20 may be used as a space in the url
-          application/json: "{\"TableName\":\"Courses\",\"KeyConditionExpression\":\"course_id = :course_id AND element_id = :element_id\",\"ExpressionAttributeValues\":{\":course_id\":{\"S\":\"$util.urlDecode($input.params('course_id'))\"},\":element_id\":{\"S\":\"quiz:$util.urlDecode($input.params('quiz_id')):question:$util.urlDecode($input.params('question_id'))\"}}}"
+          application/json: "{\"TableName\":\"QuizQuestions\",\"KeyConditionExpression\":\"quiz_id = :quiz_id AND question_id = :question_id\",\"ExpressionAttributeValues\":{\":quiz_id\":{\"S\":\"$util.urlDecode($input.params('quiz_id'))\"},\":question_id\":{\"S\":\"$util.urlDecode($input.params('question_id'))\"}}}"
         IntegrationResponses:
           - StatusCode: '200'
             ResponseTemplates:
@@ -395,7 +688,7 @@ Resources:
               # Using single-line Velocity Template Language (VTL) code as the mapping template
               # \n represents a new line, \t represents a tab character, \" represents a single quote character
               # Example response: {"music":[{"id":"38bfb57e-a5a8-4fed-9a4f-391d66d5e987","artist":"The Beatles","album":"Abbey Road"}]}
-              application/json: "#set($inputRoot = $input.path('$'))\n{\n\t\"course\": [\n\t\t#foreach($field in $inputRoot.Items) {\n\t\t\t\"course_id\": \"$field.course_id.S\",\n\t\t\t\"element_id\": \"$field.element_id.S\",\n\t\t\t\"question\": \"$field.question.S\",\n\t\t\t\"answer\": \"$field.answer.S\"\n\t\t}#if($foreach.hasNext),#end\n\t\t#end\n\t]\n}"
+              application/json: "#set($inputRoot = $input.path('$'))\n{\n\t\"course\": [\n\t\t#foreach($field in $inputRoot.Items) {\n\t\t\t\"quiz_id\": \"$field.quiz_id.S\",\n\t\t\t\"question_id\": \"$field.question_id.S\",\n\t\t\t\"question\": \"$field.question.S\",\n\t\t\t\"answer\": \"$field.answer.S\"\n\t\t}#if($foreach.hasNext),#end\n\t\t#end\n\t]\n}"
       MethodResponses:
         - StatusCode: '200'
 
